@@ -12,6 +12,10 @@ export type Task = {
   bookmarked?: boolean;
   editing?: boolean;
   created_at: number;
+  started_at: number;
+  finished_at: number;
+  generation_time_seconds: number;
+  queue_wait_seconds: number;
   updated_at: number;
 };
 

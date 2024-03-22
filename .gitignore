@@ -37,3 +37,4 @@ notification.mp3
 *.db
 *.sqlite
 *.sqlite3
+.env

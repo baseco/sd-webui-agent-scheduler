@@ -333,6 +333,7 @@ class TaskRunner:
                 task_id = task.id
                 is_img2img = task.type == "img2img"
                 log.info(f"[AgentScheduler] Executing task {task_id}")
+                task.started_at = datetime.now(timezone.utc)
 
                 task_args = self.parse_task_args(task)
                 task_meta = {
@@ -392,6 +393,7 @@ class TaskRunner:
                         }
 
                         task.status = TaskStatus.DONE
+                        task.finished_at = datetime.now(timezone.utc)
                         task.result = json.dumps(result)
                         task_manager.update_task(task)
                         self.__run_callbacks(

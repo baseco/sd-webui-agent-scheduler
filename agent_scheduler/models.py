@@ -35,6 +35,7 @@ class TaskModel(BaseModel):
     )
     params: Dict[str, Any] = Field(title="Task Parameters", description="The parameters of the task in JSON format")
     priority: Optional[int] = Field(title="Task Priority")
+    worker_id: Optional[str] = Field(title="Worker Id")
     position: Optional[int] = Field(title="Task Position")
     result: Optional[str] = Field(title="Task Result", description="The result of the task in JSON format")
     bookmarked: Optional[bool] = Field(title="Is task bookmarked")
@@ -46,6 +47,16 @@ class TaskModel(BaseModel):
     updated_at: Optional[datetime] = Field(
         title="Task Updated At",
         description="The time when the task was updated",
+        default=None,
+    )
+    started_at: Optional[datetime] = Field(
+        title="Task Updated At",
+        description="The time when the task started",
+        default=None,
+    )
+    finished_at: Optional[datetime] = Field(
+        title="Task Finished At",
+        description="The time when the task finished",
         default=None,
     )
 

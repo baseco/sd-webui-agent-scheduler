@@ -234,6 +234,22 @@ const sharedGridOptions: GridOptions<Task> = {
       valueFormatter: ({ value }: ValueFormatterParams<Task, number>) =>
         value != null ? new Date(value).toLocaleString(document.documentElement.lang) : '',
     },
+    {
+      field: 'generation_time_seconds',
+      headerName: 'Generation Time',
+      minWidth: 180,
+      editable: false,
+      valueFormatter: ({ value }: ValueFormatterParams<Task, number>) =>
+        value != null ? new Date(value).toLocaleString(document.documentElement.lang) : '',
+    },
+    {
+      field: 'queue_wait_seconds',
+      headerName: 'Queue Wait Time',
+      minWidth: 180,
+      editable: false,
+      valueFormatter: ({ value }: ValueFormatterParams<Task, number>) =>
+        value != null ? new Date(value).toLocaleString(document.documentElement.lang) : '',
+    },
   ],
 
   getRowId: ({ data }) => data.id,

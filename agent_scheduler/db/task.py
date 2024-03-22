@@ -6,10 +6,12 @@ from typing import Optional, Union, List, Dict
 
 from sqlalchemy import (
     TypeDecorator,
+    Computed,
     Column,
     String,
     Text,
-    Integer,
+    BigInteger,
+    Float,
     DateTime as DateTimeImpl,
     LargeBinary,
     Boolean,
@@ -18,9 +20,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Session
 
-from .base import BaseTableManager, Base
+from .base import BaseTableManager, Base, env_worker_id
 from ..models import TaskModel
-
 
 class DateTime(TypeDecorator):
     impl = DateTimeImpl
@@ -53,7 +54,8 @@ class Task(TaskModel):
 
     def __init__(self, **kwargs):
         priority = kwargs.pop("priority", int(datetime.now(timezone.utc).timestamp() * 1000))
-        super().__init__(priority=priority, **kwargs)
+        worker_id = kwargs.pop("worker_id", env_worker_id)
+        super().__init__(priority=priority, worker_id=worker_id, **kwargs)
 
     class Config(TaskModel.__config__):
         exclude = ["script_params"]
@@ -69,11 +71,15 @@ class Task(TaskModel):
             params=table.params,
             script_params=table.script_params,
             priority=table.priority,
+            # TODO: check if worker_id should be migrated
+            worker_id=table.worker_id,
             status=table.status,
             result=table.result,
             bookmarked=table.bookmarked,
             created_at=table.created_at,
             updated_at=table.updated_at,
+            started_at=table.started_at,
+            finished_at=table.finished_at,
         )
 
     def to_table(self):
@@ -86,9 +92,12 @@ class Task(TaskModel):
             params=self.params,
             script_params=self.script_params,
             priority=self.priority,
+            worker_id=self.worker_id,
             status=self.status,
             result=self.result,
             bookmarked=self.bookmarked,
+            started_at=self.started_at,
+            finished_at=self.finished_at,
         )
 
     def from_json(json_obj: Dict):
@@ -102,10 +111,15 @@ class Task(TaskModel):
             params=json.dumps(json_obj.get("params")),
             script_params=base64.b64decode(json_obj.get("script_params")),
             priority=json_obj.get("priority", int(datetime.now(timezone.utc).timestamp() * 1000)),
+            worker_id=json_obj.get("worker_id", None),
             result=json_obj.get("result", None),
             bookmarked=json_obj.get("bookmarked", False),
             created_at=datetime.fromtimestamp(json_obj.get("created_at", datetime.now(timezone.utc).timestamp())),
             updated_at=datetime.fromtimestamp(json_obj.get("updated_at", datetime.now(timezone.utc).timestamp())),
+            started_at=datetime.fromtimestamp(json_obj.get("started_at", None)),
+            finished_at=datetime.fromtimestamp(json_obj.get("finished_at", None)),
+            generated_time_seconds=json_obj.get("generated_time_seconds", None),
+            queue_wait_seconds=json_obj.get("queue_wait_seconds", None)
         )
 
     def to_json(self):
@@ -119,10 +133,15 @@ class Task(TaskModel):
             "params": json.loads(self.params),
             "script_params": base64.b64encode(self.script_params).decode("utf-8"),
             "priority": self.priority,
+            "worker_id": self.worker_id,
             "result": self.result,
             "bookmarked": self.bookmarked,
             "created_at": int(self.created_at.timestamp()),
             "updated_at": int(self.updated_at.timestamp()),
+            "started_at": int(self.started_at.timestamp()) if self.started_at else None,
+            "finished_at": int(self.finished_at.timestamp()) if self.finished_at else None,
+            "generated_time_seconds": self.generation_time_seconds,
+            "queue_wait_seconds": self.queue_wait_seconds,
         }
 
 
@@ -136,21 +155,26 @@ class TaskTable(Base):
     type = Column(String(20), nullable=False)  # txt2img or img2txt
     params = Column(Text, nullable=False)  # task args
     script_params = Column(LargeBinary, nullable=False)  # script args
-    priority = Column(Integer, nullable=False)
+    priority = Column(BigInteger, nullable=False)
+    worker_id = Column(String(64), nullable=False)
     status = Column(String(20), nullable=False, default="pending")  # pending, running, done, failed
     result = Column(Text)  # task result
     bookmarked = Column(Boolean, nullable=True, default=False)
     created_at = Column(
         DateTime,
         nullable=False,
-        server_default=text("(datetime('now'))"),
+        server_default=text("NOW()"),
     )
     updated_at = Column(
         DateTime,
         nullable=False,
-        server_default=text("(datetime('now'))"),
-        onupdate=text("(datetime('now'))"),
+        server_default=text("NOW()"),
+        onupdate=text("NOW()"),
     )
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    generation_time_seconds = Column(Float, Computed("EXTRACT(EPOCH FROM (finished_at - started_at))"))
+    queue_wait_seconds = Column(Float, Computed("EXTRACT(EPOCH FROM (started_at - created_at))"))
 
     def __repr__(self):
         return f"Task(id={self.id!r}, type={self.type!r}, params={self.params!r}, status={self.status!r}, created_at={self.created_at!r})"
@@ -201,6 +225,8 @@ class TaskManager(BaseTableManager):
         session = Session(self.engine)
         try:
             query = session.query(TaskTable)
+            # TODO: change this logic before launching this extension externally
+            query.filter(TaskTable.worker_id == env_worker_id)
             if type:
                 query = query.filter(TaskTable.type == type)
 
