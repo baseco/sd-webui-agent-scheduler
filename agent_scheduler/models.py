@@ -26,6 +26,8 @@ class TaskModel(BaseModel):
     id: str = Field(title="Task Id")
     api_task_id: Optional[str] = Field(title="API Task Id", default=None)
     api_task_callback: Optional[str] = Field(title="API Task Callback", default=None)
+    bot_queue: Optional[str] = Field(title="API Task Callback Queue", default=None)
+    bot_message: Optional[str] = Field(title="API Task Callback Message", default=None)
     name: Optional[str] = Field(title="Task Name")
     type: str = Field(title="Task Type", description="Either txt2img or img2img")
     status: str = Field(
@@ -35,6 +37,7 @@ class TaskModel(BaseModel):
     )
     params: Dict[str, Any] = Field(title="Task Parameters", description="The parameters of the task in JSON format")
     priority: Optional[int] = Field(title="Task Priority")
+    ack_tag: Optional[int] = Field(title="Task Ack Tag")
     worker_id: Optional[str] = Field(title="Worker Id")
     position: Optional[int] = Field(title="Task Position")
     result: Optional[str] = Field(title="Task Result", description="The result of the task in JSON format")

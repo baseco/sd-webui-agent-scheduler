@@ -1,7 +1,6 @@
 import io
 import os
 import json
-import base64
 import requests
 import threading
 from uuid import uuid4

@@ -7,8 +7,9 @@ from typing import List
 from collections import defaultdict
 from datetime import datetime, timedelta
 
+from agent_scheduler.mq import MQ_CHANNEL, bind_consume, start_consume
 from modules import call_queue, shared, script_callbacks, scripts, ui_components
-from modules.shared import list_checkpoint_tiles, refresh_checkpoints
+from modules.shared import list_checkpoint_tiles, refresh_checkpoints, cmd_opts
 from modules.cmd_args import parser
 from modules.ui import create_refresh_button
 from modules.ui_common import save_files
@@ -22,7 +23,12 @@ from modules.generation_parameters_copypaste import (
 )
 
 from agent_scheduler.task_runner import TaskRunner, get_instance
-from agent_scheduler.helpers import log, compare_components_with_ids, get_components_by_ids, is_macos
+from agent_scheduler.helpers import (
+    log,
+    compare_components_with_ids,
+    get_components_by_ids,
+    is_macos,
+)
 from agent_scheduler.db import init as init_db, task_manager, TaskStatus
 from agent_scheduler.api import regsiter_apis
 
@@ -41,7 +47,14 @@ ui_placement_append_to_main = "Append to main UI"
 placement_under_generate = "Under Generate button"
 placement_between_prompt_and_generate = "Between Prompt and Generate button"
 
-completion_action_choices = ["Do nothing", "Shut down", "Restart", "Sleep", "Hibernate", "Stop webui"]
+completion_action_choices = [
+    "Do nothing",
+    "Shut down",
+    "Restart",
+    "Sleep",
+    "Hibernate",
+    "Stop webui",
+]
 
 task_filter_choices = ["All", "Bookmarked", "Done", "Failed", "Interrupted"]
 
@@ -52,8 +65,12 @@ enqueue_key_modifiers = [
 ]
 enqueue_default_hotkey = enqueue_key_modifiers[0] + "+KeyE"
 enqueue_key_codes = {}
-enqueue_key_codes.update({chr(i): "Key" + chr(i) for i in range(ord("A"), ord("Z") + 1)})
-enqueue_key_codes.update({chr(i): "Digit" + chr(i) for i in range(ord("0"), ord("9") + 1)})
+enqueue_key_codes.update(
+    {chr(i): "Key" + chr(i) for i in range(ord("A"), ord("Z") + 1)}
+)
+enqueue_key_codes.update(
+    {chr(i): "Digit" + chr(i) for i in range(ord("0"), ord("9") + 1)}
+)
 enqueue_key_codes.update({"`": "Backquote", "Enter": "Enter"})
 
 task_history_retenion_map = {
@@ -80,7 +97,7 @@ class Script(scripts.Script):
         self.submit_button = None
 
     def title(self):
-        return "Agent Scheduler"
+        return "Channel AI Worker"
 
     def show(self, is_img2img):
         return scripts.AlwaysVisible
@@ -90,8 +107,12 @@ class Script(scripts.Script):
 
     def after_component(self, component, **_kwargs):
         generate_id = "txt2img_generate" if self.is_txt2img else "img2img_generate"
-        generate_box = "txt2img_generate_box" if self.is_txt2img else "img2img_generate_box"
-        actions_column_id = "txt2img_actions_column" if self.is_txt2img else "img2img_actions_column"
+        generate_box = (
+            "txt2img_generate_box" if self.is_txt2img else "img2img_generate_box"
+        )
+        actions_column_id = (
+            "txt2img_actions_column" if self.is_txt2img else "img2img_actions_column"
+        )
         neg_id = "txt2img_neg_prompt" if self.is_txt2img else "img2img_neg_prompt"
         toprow_id = "txt2img_toprow" if self.is_txt2img else "img2img_toprow"
 
@@ -110,15 +131,25 @@ class Script(scripts.Script):
             if getattr(shared.opts, "compact_prompt_box", False):
                 add_enqueue_row(generate_box)
             else:
-                if getattr(shared.opts, "queue_button_placement", placement_under_generate) == placement_under_generate:
+                if (
+                    getattr(
+                        shared.opts, "queue_button_placement", placement_under_generate
+                    )
+                    == placement_under_generate
+                ):
                     add_enqueue_row(actions_column_id)
         elif component.elem_id == neg_id:
             if not getattr(shared.opts, "compact_prompt_box", False):
-                if getattr(shared.opts, "queue_button_placement", placement_under_generate) == placement_between_prompt_and_generate:
+                if (
+                    getattr(
+                        shared.opts, "queue_button_placement", placement_under_generate
+                    )
+                    == placement_between_prompt_and_generate
+                ):
                     add_enqueue_row(toprow_id)
 
     def on_app_started(self, block):
-        if self.generate_button is not None:
+        if self.generate_button is not None and not cmd_opts.nowebui:
             self.bind_enqueue_button(block)
 
     def add_enqueue_button(self):
@@ -140,13 +171,17 @@ class Script(scripts.Script):
                     lambda: {"choices": get_checkpoint_choices()},
                     f"refresh_{id_part}_checkpoint",
                 )
-            self.submit_button = gr.Button("Enqueue", elem_id=f"{id_part}_enqueue", variant="primary")
+            self.submit_button = gr.Button(
+                "Enqueue", elem_id=f"{id_part}_enqueue", variant="primary"
+            )
 
     def bind_enqueue_button(self, root: gr.Blocks):
         generate = self.generate_button
         is_img2img = self.is_img2img
         dependencies: List[dict] = [
-            x for x in root.dependencies if x["trigger"] == "click" and generate._id in x["targets"]
+            x
+            for x in root.dependencies
+            if x["trigger"] == "click" and generate._id in x["targets"]
         ]
 
         dependency: dict = None
@@ -156,7 +191,10 @@ class Script(scripts.Script):
             if len(d["outputs"]) == 1:
                 outputs = get_components_by_ids(root, d["outputs"])
                 output = outputs[0]
-                if isinstance(output, gr.State) and type(output.value).__name__ == "UiControlNetUnit":
+                if (
+                    isinstance(output, gr.State)
+                    and type(output.value).__name__ == "UiControlNetUnit"
+                ):
                     cnet_dependency = d
                     UiControlNetUnit = type(output.value)
 
@@ -165,9 +203,15 @@ class Script(scripts.Script):
 
         with root:
             if self.checkpoint_dropdown is not None:
-                self.checkpoint_dropdown.change(fn=self.on_checkpoint_changed, inputs=[self.checkpoint_dropdown])
+                self.checkpoint_dropdown.change(
+                    fn=self.on_checkpoint_changed, inputs=[self.checkpoint_dropdown]
+                )
 
-            fn_block = next(fn for fn in root.fns if compare_components_with_ids(fn.inputs, dependency["inputs"]))
+            fn_block = next(
+                fn
+                for fn in root.fns
+                if compare_components_with_ids(fn.inputs, dependency["inputs"])
+            )
             fn = self.wrap_register_ui_task()
             inputs = fn_block.inputs.copy()
             inputs.insert(0, self.checkpoint_dropdown)
@@ -183,7 +227,9 @@ class Script(scripts.Script):
 
             if cnet_dependency is not None:
                 cnet_fn_block = next(
-                    fn for fn in root.fns if compare_components_with_ids(fn.inputs, cnet_dependency["inputs"])
+                    fn
+                    for fn in root.fns
+                    if compare_components_with_ids(fn.inputs, cnet_dependency["inputs"])
                 )
                 self.submit_button.click(
                     fn=UiControlNetUnit,
@@ -210,13 +256,22 @@ class Script(scripts.Script):
                     task_name = task_id
                     task_id = str(uuid4())
 
-                if checkpoint is None or checkpoint == "" or checkpoint == checkpoint_current:
+                if (
+                    checkpoint is None
+                    or checkpoint == ""
+                    or checkpoint == checkpoint_current
+                ):
                     checkpoint = [shared.sd_model.sd_checkpoint_info.title]
                 elif checkpoint == checkpoint_runtime:
                     checkpoint = [None]
                 elif checkpoint.endswith(" checkpoints)"):
                     checkpoint_dir = " ".join(checkpoint.split(" ")[0:-2])
-                    checkpoint = list(filter(lambda c: c.startswith(checkpoint_dir), list_checkpoint_tiles()))
+                    checkpoint = list(
+                        filter(
+                            lambda c: c.startswith(checkpoint_dir),
+                            list_checkpoint_tiles(),
+                        )
+                    )
                 else:
                     checkpoint = [checkpoint]
 
@@ -247,7 +302,9 @@ def get_checkpoint_choices():
             checkpoint_dir = os.path.dirname(checkpoint_dir)
 
     choices = checkpoints
-    choices.extend([f"{d} ({checkpoint_dirs[d]} checkpoints)" for d in checkpoint_dirs.keys()])
+    choices.extend(
+        [f"{d} ({checkpoint_dirs[d]} checkpoints)" for d in checkpoint_dirs.keys()]
+    )
     choices = sorted(choices)
 
     choices.insert(0, checkpoint_runtime)
@@ -285,13 +342,24 @@ def infotexts_to_geninfo(infotexts: List[str]):
     all_promts = []
     all_seeds = []
 
-    geninfo = {"infotexts": infotexts, "all_prompts": all_promts, "all_seeds": all_seeds, "index_of_first_image": 0}
+    geninfo = {
+        "infotexts": infotexts,
+        "all_prompts": all_promts,
+        "all_seeds": all_seeds,
+        "index_of_first_image": 0,
+    }
 
     for infotext in infotexts:
         # Dynamic prompt breaks layout of infotext
         if "Template: " in infotext:
             lines = infotext.split("\n")
-            lines = [l for l in lines if not (l.startswith("Template: ") or l.startswith("Negative Template: "))]
+            lines = [
+                l
+                for l in lines
+                if not (
+                    l.startswith("Template: ") or l.startswith("Negative Template: ")
+                )
+            ]
             infotext = "\n".join(lines)
 
         params = parse_generation_parameters(infotext)
@@ -335,7 +403,11 @@ def get_task_results(task_id: str, image_idx: int = None):
                 infotexts = result.get("infotexts", [])
                 geninfo = infotexts_to_geninfo(infotexts)
 
-            galerry = [Image.open(i) for i in images if os.path.exists(i)] if image_idx is None else gr.update()
+            galerry = (
+                [Image.open(i) for i in images if os.path.exists(i)]
+                if image_idx is None
+                else gr.update()
+            )
             idx = image_idx if image_idx is not None else 0
             if idx < len(infotexts):
                 infotext = infotexts[idx]
@@ -369,12 +441,18 @@ def remove_old_tasks():
         getattr(shared.opts, "queue_history_retention_days", None)
         and shared.opts.queue_history_retention_days in task_history_retenion_map
     ):
-        retention_days = task_history_retenion_map[shared.opts.queue_history_retention_days]
+        retention_days = task_history_retenion_map[
+            shared.opts.queue_history_retention_days
+        ]
 
     if retention_days > 0:
-        deleted_rows = task_manager.delete_tasks(before=datetime.now() - timedelta(days=retention_days))
+        deleted_rows = task_manager.delete_tasks(
+            before=datetime.now() - timedelta(days=retention_days)
+        )
         if deleted_rows > 0:
-            log.debug(f"[AgentScheduler] Deleted {deleted_rows} tasks older than {retention_days} days")
+            log.debug(
+                f"[AgentScheduler] Deleted {deleted_rows} tasks older than {retention_days} days"
+            )
 
 
 def on_ui_tab(**_kwargs):
@@ -382,10 +460,15 @@ def on_ui_tab(**_kwargs):
 
     with gr.Blocks(analytics_enabled=False) as scheduler_tab:
         with gr.Tabs(elem_id="agent_scheduler_tabs"):
-            with gr.Tab("Task Queue", id=0, elem_id="agent_scheduler_pending_tasks_tab"):
+            with gr.Tab(
+                "Task Queue", id=0, elem_id="agent_scheduler_pending_tasks_tab"
+            ):
                 with gr.Row(elem_id="agent_scheduler_pending_tasks_wrapper"):
                     with gr.Column(scale=1):
-                        with gr.Row(elem_id="agent_scheduler_pending_tasks_actions", elem_classes="flex-row"):
+                        with gr.Row(
+                            elem_id="agent_scheduler_pending_tasks_actions",
+                            elem_classes="flex-row",
+                        ):
                             paused = getattr(shared.opts, "queue_paused", False)
 
                             gr.Button(
@@ -420,9 +503,17 @@ def on_ui_tab(**_kwargs):
                                 elem_id="agent_scheduler_action_import",
                                 variant="secondary",
                             )
-                            gr.HTML(f'<input type="file" id="agent_scheduler_import_file" style="display: none" accept="application/json" />')
+                            gr.HTML(
+                                f'<input type="file" id="agent_scheduler_import_file" style="display: none" accept="application/json" />'
+                            )
 
-                            with gr.Row(elem_classes=["agent_scheduler_filter_container", "flex-row", "ml-auto"]):
+                            with gr.Row(
+                                elem_classes=[
+                                    "agent_scheduler_filter_container",
+                                    "flex-row",
+                                    "ml-auto",
+                                ]
+                            ):
                                 gr.Textbox(
                                     max_lines=1,
                                     placeholder="Search",
@@ -445,7 +536,10 @@ def on_ui_tab(**_kwargs):
             with gr.Tab("Task History", id=1, elem_id="agent_scheduler_history_tab"):
                 with gr.Row(elem_id="agent_scheduler_history_wrapper"):
                     with gr.Column(scale=1):
-                        with gr.Row(elem_id="agent_scheduler_history_actions", elem_classes="flex-row"):
+                        with gr.Row(
+                            elem_id="agent_scheduler_history_actions",
+                            elem_classes="flex-row",
+                        ):
                             gr.Button(
                                 "Requeue Failed",
                                 elem_id="agent_scheduler_action_requeue",
@@ -463,7 +557,13 @@ def on_ui_tab(**_kwargs):
                                 variant="stop",
                             )
 
-                            with gr.Row(elem_classes=["agent_scheduler_filter_container", "flex-row", "ml-auto"]):
+                            with gr.Row(
+                                elem_classes=[
+                                    "agent_scheduler_filter_container",
+                                    "flex-row",
+                                    "ml-auto",
+                                ]
+                            ):
                                 status = gr.Dropdown(
                                     elem_id="agent_scheduler_status_filter",
                                     choices=task_filter_choices,
@@ -516,7 +616,10 @@ def on_ui_tab(**_kwargs):
                                 )
                             send_to_buttons = create_send_to_buttons()
                         with gr.Group():
-                            generation_info = gr.Textbox(visible=False, elem_id=f"agent_scheduler_generation_info")
+                            generation_info = gr.Textbox(
+                                visible=False,
+                                elem_id=f"agent_scheduler_generation_info",
+                            )
                             infotext = gr.TextArea(
                                 label="Generation Info",
                                 elem_id=f"agent_scheduler_history_infotext",
@@ -532,7 +635,10 @@ def on_ui_tab(**_kwargs):
                                 visible=False,
                                 elem_id=f"agent_scheduler_download_files",
                             )
-                            html_log = gr.HTML(elem_id=f"agent_scheduler_html_log", elem_classes="html-log")
+                            html_log = gr.HTML(
+                                elem_id=f"agent_scheduler_html_log",
+                                elem_classes="html-log",
+                            )
                             selected_task = gr.Textbox(
                                 elem_id="agent_scheduler_history_selected_task",
                                 visible=False,
@@ -551,7 +657,9 @@ def on_ui_tab(**_kwargs):
             inputs=[status],
         )
         save.click(
-            fn=lambda x, y, z: call_queue.wrap_gradio_call(save_files)(x, y, False, int(z)),
+            fn=lambda x, y, z: call_queue.wrap_gradio_call(save_files)(
+                x, y, False, int(z)
+            ),
             _js="(x, y, z) => [x, y, selected_gallery_index()]",
             inputs=[generation_info, galerry, infotext],
             outputs=[download_files, html_log],
@@ -559,7 +667,9 @@ def on_ui_tab(**_kwargs):
         )
         if save_zip:
             save_zip.click(
-                fn=lambda x, y, z: call_queue.wrap_gradio_call(save_files)(x, y, True, int(z)),
+                fn=lambda x, y, z: call_queue.wrap_gradio_call(save_files)(
+                    x, y, True, int(z)
+                ),
                 _js="(x, y, z) => [x, y, selected_gallery_index()]",
                 inputs=[generation_info, galerry, infotext],
                 outputs=[download_files, html_log],
@@ -567,7 +677,14 @@ def on_ui_tab(**_kwargs):
         selected_task.change(
             fn=lambda x: get_task_results(x, None),
             inputs=[selected_task],
-            outputs=[infotext, result_actions, galerry, generation_info, download_files, html_log],
+            outputs=[
+                infotext,
+                result_actions,
+                galerry,
+                generation_info,
+                download_files,
+                html_log,
+            ],
         )
         selected_image_id.change(
             fn=lambda x, y: get_task_results(x, image_idx=int(y)),
@@ -587,11 +704,11 @@ def on_ui_tab(**_kwargs):
         except:
             pass
 
-    return [(scheduler_tab, "Agent Scheduler", "agent_scheduler")]
+    return [(scheduler_tab, "Channel AI Worker", "agent_scheduler")]
 
 
 def on_ui_settings():
-    section = ("agent_scheduler", "Agent Scheduler")
+    section = ("agent_scheduler", "Channel AI Worker")
     shared.opts.add_option(
         "queue_paused",
         shared.OptionInfo(
@@ -762,13 +879,17 @@ def on_ui_settings():
 
 
 def on_app_started(block: gr.Blocks, app):
+    print("here")
     global task_runner
     task_runner = get_instance(block)
     task_runner.execute_pending_tasks_threading()
     regsiter_apis(app, task_runner)
     task_runner.on_task_cleared(lambda: remove_old_tasks())
 
-    if getattr(shared.opts, "queue_ui_placement", "") == ui_placement_append_to_main and block:
+    if (
+        getattr(shared.opts, "queue_ui_placement", "") == ui_placement_append_to_main
+        and block
+    ):
         with block:
             with block.children[1]:
                 bindings = registered_param_bindings.copy()
@@ -776,6 +897,30 @@ def on_app_started(block: gr.Blocks, app):
                 on_ui_tab()
                 connect_paste_params_buttons()
                 registered_param_bindings.extend(bindings)
+
+    def process_image_request(ch, method, properties, body):
+        print(f" [x] Received in queue {json.loads(body.decode())}")
+        args = json.loads(body.decode())
+        task_id = args.get("taskId", "invalid")
+        checkpoint = args.pop("checkpoint", None)
+        vae = args.pop("vae", None)
+
+        task_runner.register_api_task(
+            task_id,
+            api_task_id=None,
+            is_img2img=False,
+            args=args,
+            checkpoint=checkpoint,
+            vae=vae,
+            ack_tag=method.delivery_tag,
+        )
+        MQ_CHANNEL.basic_ack(delivery_tag=method.delivery_tag)
+
+    queues = ["picxReal_10Lcm", "realvisxlV40_v40LightningBakedvae"]
+    for queue in queues:
+        print("here", queue)
+        bind_consume(queue, process_image_request)
+    start_consume()
 
 
 if getattr(shared.opts, "queue_ui_placement", "") != ui_placement_append_to_main:

@@ -10,6 +10,7 @@ export type Task = {
   priority: number;
   result: string;
   bookmarked?: boolean;
+  ack_tag?: number;
   editing?: boolean;
   created_at: number;
   started_at: number;

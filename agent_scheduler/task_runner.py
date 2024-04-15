@@ -23,7 +23,9 @@ from modules.api.models import (
     StableDiffusionImg2ImgProcessingAPI,
 )
 
+from pika.adapters.blocking_connection import BlockingChannel
 from .db import TaskStatus, Task, task_manager
+from .mq import MQ_CHANNEL
 from .helpers import (
     log,
     detect_control_net,
@@ -112,7 +114,9 @@ class TaskRunner:
         vae: str = None,
         request: gr.Request = None,
     ):
-        named_args, script_args = map_ui_task_args_list_to_named_args(list(args), is_img2img)
+        named_args, script_args = map_ui_task_args_list_to_named_args(
+            list(args), is_img2img
+        )
 
         # loop through named_args and serialize images
         if is_img2img:
@@ -141,8 +145,12 @@ class TaskRunner:
         vae: str = None,
         **api_args,
     ):
-        named_args = serialize_api_task_args(api_args, is_img2img, checkpoint=checkpoint, vae=vae)
-        checkpoint = get_dict_attribute(named_args, "override_settings.sd_model_checkpoint", None)
+        named_args = serialize_api_task_args(
+            api_args, is_img2img, checkpoint=checkpoint, vae=vae
+        )
+        checkpoint = get_dict_attribute(
+            named_args, "override_settings.sd_model_checkpoint", None
+        )
         script_args = named_args.pop("script_args", [])
 
         params = json.dumps(
@@ -291,7 +299,9 @@ class TaskRunner:
         )
         task_manager.add_task(task)
 
-        self.__run_callbacks("task_registered", task_id, is_img2img=is_img2img, is_ui=True, args=params)
+        self.__run_callbacks(
+            "task_registered", task_id, is_img2img=is_img2img, is_ui=True, args=params
+        )
         self.__total_pending_tasks += 1
 
         return task
@@ -304,10 +314,14 @@ class TaskRunner:
         args: Dict,
         checkpoint: str = None,
         vae: str = None,
+        ack_tag: str = None,
+        channel: BlockingChannel = None,
     ):
         progress.add_task_to_queue(task_id)
 
-        (params, script_params) = self.__serialize_api_task_args(is_img2img, checkpoint=checkpoint, vae=vae, **args)
+        (params, script_params) = self.__serialize_api_task_args(
+            is_img2img, checkpoint=checkpoint, vae=vae, **args
+        )
 
         task_type = "img2img" if is_img2img else "txt2img"
         task = Task(
@@ -316,13 +330,28 @@ class TaskRunner:
             type=task_type,
             params=params,
             script_params=script_params,
+            ack_tag=ack_tag,
         )
-        task_manager.add_task(task)
+        try:
 
-        self.__run_callbacks("task_registered", task_id, is_img2img=is_img2img, is_ui=False, args=params)
-        self.__total_pending_tasks += 1
-
-        return task
+            res = task_manager.add_task(task)
+            if res is True:
+                self.__run_callbacks(
+                    "task_registered",
+                    task_id,
+                    is_img2img=is_img2img,
+                    is_ui=False,
+                    args=params,
+                )
+                self.__total_pending_tasks += 1
+                self.__execute_api_task(task_id, False)
+                return Task
+            else:
+                # TODO: handle failure more gracefully
+                # MQ_CHANNEL.basic_ack(delivery_tag=ack_tag)
+                return None
+        finally:
+            return None
 
     def execute_task(self, task: Task, get_next_task: Callable[[], Task]):
         while True:
@@ -357,22 +386,33 @@ class TaskRunner:
 
                 if not res or isinstance(res, Exception):
                     if isinstance(res, OutOfMemoryError):
-                        log.error(f"[AgentScheduler] Task {task_id} failed: CUDA OOM. Queue will be paused.")
+                        log.error(
+                            f"[AgentScheduler] Task {task_id} failed: CUDA OOM. Queue will be paused."
+                        )
                         shared.opts.queue_paused = True
                     else:
                         log.error(f"[AgentScheduler] Task {task_id} failed: {res}")
                         log.debug(traceback.format_exc())
 
-                    if getattr(shared.opts, "queue_automatic_requeue_failed_task", False):
+                    if getattr(
+                        shared.opts, "queue_automatic_requeue_failed_task", False
+                    ):
                         log.info(f"[AgentScheduler] Requeue task {task_id}")
                         task.status = TaskStatus.PENDING
-                        task.priority = int(datetime.now(timezone.utc).timestamp() * 1000)
+                        task.priority = int(
+                            datetime.now(timezone.utc).timestamp() * 1000
+                        )
                         task_manager.update_task(task)
                     else:
                         task.status = TaskStatus.FAILED
                         task.result = str(res) if res else None
                         task_manager.update_task(task)
-                        self.__run_callbacks("task_finished", task_id, status=TaskStatus.FAILED, **task_meta)
+                        self.__run_callbacks(
+                            "task_finished",
+                            task_id,
+                            status=TaskStatus.FAILED,
+                            **task_meta,
+                        )
                 else:
                     is_interrupted = self.interrupted == task_id
                     if is_interrupted:
@@ -440,7 +480,9 @@ class TaskRunner:
 
     def __execute_task(self, task_id: str, is_img2img: bool, task_args: ParsedTaskArgs):
         if task_args.is_ui:
-            ui_args = map_named_args_to_ui_task_args_list(task_args.named_args, task_args.script_args, is_img2img)
+            ui_args = map_named_args_to_ui_task_args_list(
+                task_args.named_args, task_args.script_args, is_img2img
+            )
 
             return self.__execute_ui_task(task_id, is_img2img, *ui_args)
         else:
@@ -461,7 +503,11 @@ class TaskRunner:
             res = None
             try:
                 result = func(*args)
-                if result[0] is None and hasattr(shared.state, "oom") and shared.state.oom:
+                if (
+                    result[0] is None
+                    and hasattr(shared.state, "oom")
+                    and shared.state.oom
+                ):
                     res = OutOfMemoryError()
                 elif "CUDA out of memory" in result[2]:
                     res = OutOfMemoryError()
@@ -484,7 +530,9 @@ class TaskRunner:
             result = (
                 self.__api.img2imgapi(StableDiffusionImg2ImgProcessingAPI(**kwargs))
                 if is_img2img
-                else self.__api.text2imgapi(StableDiffusionTxt2ImgProcessingAPI(**kwargs))
+                else self.__api.text2imgapi(
+                    StableDiffusionTxt2ImgProcessingAPI(**kwargs)
+                )
             )
             res = result.info
         except Exception as e:
@@ -522,7 +570,9 @@ class TaskRunner:
 
         # get more task if needed
         if self.__total_pending_tasks > 0:
-            log.info(f"[AgentScheduler] Total pending tasks: {self.__total_pending_tasks}")
+            log.info(
+                f"[AgentScheduler] Total pending tasks: {self.__total_pending_tasks}"
+            )
             pending_tasks = task_manager.get_tasks(status="pending", limit=1)
             if len(pending_tasks) > 0:
                 return pending_tasks[0]
@@ -539,7 +589,7 @@ class TaskRunner:
             self.__saved_images_path.insert(0, data.filename)
         else:
             self.__saved_images_path.append(data.filename)
-    
+
     def __on_completed(self):
         action = getattr(shared.opts, "queue_completion_action", "Do nothing")
 
@@ -571,7 +621,11 @@ class TaskRunner:
             elif is_macos:
                 command = ["osascript", "-e", 'tell application "Finder" to sleep']
             else:
-                command = ["sh", "-c", 'systemctl hybrid-sleep || (echo "Couldn\'t hybrid sleep, will try to suspend instead: $?"; systemctl suspend)']
+                command = [
+                    "sh",
+                    "-c",
+                    'systemctl hybrid-sleep || (echo "Couldn\'t hybrid sleep, will try to suspend instead: $?"; systemctl suspend)',
+                ]
         elif action == "Hibernate":
             log.info("[AgentScheduler] Hibernating...")
             if is_windows:

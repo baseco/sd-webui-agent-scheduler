@@ -69,6 +69,7 @@ def init():
                         priority INTEGER NOT NULL,
                         status VARCHAR(20) NOT NULL,
                         worker_id VARCHAR(64) NOT NULL,
+                        ack_tag INTEGER NOT NULL,
                         created_at TIMESTAMPTZ DEFAULT (NOW()) NOT NULL,
                         updated_at TIMESTAMPTZ DEFAULT (NOW()) NOT NULL,
                         started_at TIMESTAMPTZ DEFAULT (NULL),

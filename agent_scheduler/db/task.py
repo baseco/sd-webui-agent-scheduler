@@ -73,6 +73,7 @@ class Task(TaskModel):
             priority=table.priority,
             # TODO: check if worker_id should be migrated
             worker_id=table.worker_id,
+            ack_tag=table.ack_tag,
             status=table.status,
             result=table.result,
             bookmarked=table.bookmarked,
@@ -95,6 +96,7 @@ class Task(TaskModel):
             worker_id=self.worker_id,
             status=self.status,
             result=self.result,
+            ack_tag=self.ack_tag,
             bookmarked=self.bookmarked,
             started_at=self.started_at,
             finished_at=self.finished_at,
@@ -111,6 +113,7 @@ class Task(TaskModel):
             params=json.dumps(json_obj.get("params")),
             script_params=base64.b64decode(json_obj.get("script_params")),
             priority=json_obj.get("priority", int(datetime.now(timezone.utc).timestamp() * 1000)),
+            ack_tag=json_obj.get("ack_tag", None),
             worker_id=json_obj.get("worker_id", None),
             result=json_obj.get("result", None),
             bookmarked=json_obj.get("bookmarked", False),
@@ -135,6 +138,7 @@ class Task(TaskModel):
             "priority": self.priority,
             "worker_id": self.worker_id,
             "result": self.result,
+            "ack_tag": self.ack_tag,
             "bookmarked": self.bookmarked,
             "created_at": int(self.created_at.timestamp()),
             "updated_at": int(self.updated_at.timestamp()),
@@ -160,6 +164,7 @@ class TaskTable(Base):
     status = Column(String(20), nullable=False, default="pending")  # pending, running, done, failed
     result = Column(Text)  # task result
     bookmarked = Column(Boolean, nullable=True, default=False)
+    ack_tag = Column(BigInteger, nullable=True)
     created_at = Column(
         DateTime,
         nullable=False,
@@ -294,12 +299,21 @@ class TaskManager(BaseTableManager):
             item = task.to_table()
             session.add(item)
             session.commit()
-            return task
-        except Exception as e:
-            print(f"Exception adding task to database: {e}")
-            raise e
-        finally:
             session.close()
+            return True
+        except Exception as e:
+            session.rollback()
+            try:
+                task = session.query(TaskTable).filter(TaskTable.id == task.id).first()
+            except Exception as e:
+                return False
+            # running / pending idempotent
+            if task.status != TaskStatus.DONE and task.status != TaskStatus.FAILED:
+                session.merge(item)
+                session.commit()
+                return True
+            session.close()
+            return False
 
     def update_task(self, task: Task) -> TaskTable:
         session = Session(self.engine)
